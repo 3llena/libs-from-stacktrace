@@ -2,6 +2,9 @@
 #include <stacktrace>
 #include <map>
 
+template< class type_t >
+auto ptr( auto address ) { return ( type_t )address; }
+
 namespace pe
 {
    enum pe_magic_t
@@ -144,74 +147,25 @@ namespace pe
       std::int16_t m_number_of_line_numbers;
       std::int32_t m_characteristics;
    };
-}
-
-namespace nt
-{
-   struct unicode_string_t
-   {
-      std::uint16_t m_length;
-      std::uint16_t m_maximum_length;
-      wchar_t* m_buffer;
-   };
-
-   struct object_attributes_t
-   {
-      std::uint32_t m_length;
-      std::int16_t m_res1[0x2];
-      std::uint8_t* m_root_directory;
-      unicode_string_t* m_object_name;
-      std::uint32_t m_attributes;
-      std::int16_t m_res2[0x2];
-      std::uint8_t* m_security_descriptor;
-      std::uint8_t* m_security_quality_of_service;
-   };
-}
-
-namespace ntdll
-{
-   [[ nodiscard ]]
-   std::tuple< pe::dos_header_t*, pe::nt_headers_t*, std::uint8_t* >find_image( )
-   {
-      for ( const auto& it : std::stacktrace::current( ) )
-      {
-         if ( it.description( ).find( "ntdll!RtlUserThreadStart" ) == std::string::npos )
-            continue;
-
-         auto image_ptr{ ( std::uint8_t* )( it.native_handle( ) ) };
-         if ( !image_ptr )
-            return {};
-
-         do {
-            auto dos_header{ ( pe::dos_header_t* )( image_ptr ) };
-            auto nt_headers{ ( pe::nt_headers_t* )( image_ptr + dos_header->m_lfanew ) };
-            if ( !dos_header->is_valid( )
-              || !nt_headers->is_valid( ) )
-               continue;
-
-            return std::tuple{ dos_header, nt_headers, ( std::uint8_t* )( dos_header ) };
-         } while ( image_ptr-- );
-      }
-      return {};
-   }
 
    [[ nodiscard ]]
-   std::uint8_t* find_export( const std::string_view export_name )
+   std::uint8_t* find_export( std::uint8_t* image_ptr, const std::string_view export_name )
    {
-      auto [dos_header, nt_headers, image_ptr] = find_image( );
+      auto dos_header{ ptr< dos_header_t* >( image_ptr ) };
+      auto nt_headers{ ptr< nt_headers_t* >( image_ptr + dos_header->m_lfanew ) };
       if ( !dos_header->is_valid( )
         || !nt_headers->is_valid( ) )
          return {};
 
-      auto exp_dir{ ( pe::export_directory_t* )( image_ptr + nt_headers->m_export_table.m_virtual_address ) };
+      auto exp_dir{ ptr< pe::export_directory_t* >( image_ptr + nt_headers->m_export_table.m_virtual_address ) };
       if ( !exp_dir->m_address_of_functions 
         || !exp_dir->m_address_of_names 
         || !exp_dir->m_address_of_names_ordinals )
          return {};
 
-      auto name{ ( std::int32_t* )( image_ptr + exp_dir->m_address_of_names ) };
-      auto func{ ( std::int32_t* )( image_ptr + exp_dir->m_address_of_functions ) };
-      auto ords{ ( std::int16_t* )( image_ptr + exp_dir->m_address_of_names_ordinals ) };
+      auto name{ ptr< std::int32_t* >( image_ptr + exp_dir->m_address_of_names ) };
+      auto func{ ptr< std::int32_t* >( image_ptr + exp_dir->m_address_of_functions ) };
+      auto ords{ ptr< std::int16_t* >( image_ptr + exp_dir->m_address_of_names_ordinals ) };
 
       std::map< std::string, std::uint8_t* >exports{};
 
@@ -223,27 +177,58 @@ namespace ntdll
            || !cur_func )
             continue;
 
-         if ( export_name == ( const char* )( cur_name ) ) return ( std::uint8_t* )( cur_func );
+         if ( export_name == ptr< const char* >( cur_name ) ) 
+            return ptr< std::uint8_t* >( cur_func );
+      }
+      return {};
+   }
+}
+
+namespace kernel32
+{
+   [[ nodiscard ]]
+   std::uint8_t* find_image( )
+   {
+      for ( const auto& it : std::stacktrace::current( ) )
+      {
+         if ( it.description( ).find( "KERNEL32" ) == std::string::npos )
+            continue;
+
+         auto image_ptr{ ptr< std::uint8_t* >( it.native_handle( ) ) };
+         if ( !image_ptr )
+            return {};
+
+         do {
+            auto dos_header{ ptr< pe::dos_header_t* >( image_ptr ) };
+            auto nt_headers{ ptr< pe::nt_headers_t* >( image_ptr + dos_header->m_lfanew ) };
+            if ( !dos_header->is_valid( )
+              || !nt_headers->is_valid( ) )
+               continue;
+
+            return ptr< std::uint8_t* >( dos_header );
+         } while ( image_ptr-- );
       }
       return {};
    }
 
-   using rtl_init_unicode_string_t = void( __stdcall* )( nt::unicode_string_t*, const wchar_t* );
-   using rtl_adjust_privilege_t = std::int32_t( __stdcall* )( std::uint32_t, std::int8_t, std::int8_t, std::int8_t* );
-   
-   std::int32_t rtl_adjust_privilege( std::uint32_t privilege, std::int8_t enable, std::int8_t current_thread, std::int8_t* enabled ) { return ( ( rtl_adjust_privilege_t )( find_export( "RtlAdjustPrivilege" ) ) )( privilege, enable, current_thread, enabled ); }
-   void rtl_init_unicode_string( nt::unicode_string_t* dst_string, const wchar_t* src_string ) { ( ( rtl_init_unicode_string_t )( find_export( "RtlInitUnicodeString" ) ) )( dst_string, src_string ); }
-   
-   using zw_open_key_t = std::int32_t( __stdcall* )( std::uint8_t**, std::uint32_t, nt::object_attributes_t* );
-   using zw_create_key_t = std::int32_t( __stdcall* )( std::uint8_t**, std::uint32_t, nt::object_attributes_t*, std::uint32_t, nt::unicode_string_t*, std::uint32_t, std::uint32_t* );
-   using zw_delete_key_t = std::int32_t( __stdcall* )( std::uint8_t* );
+   [[ nodiscard ]]
+   std::uint8_t* load_library( const std::string_view library_name )
+   {
+      static auto fn_call{ pe::find_export( find_image( ), "LoadLibraryA" ) };
+      if ( !fn_call )
+         return {};
 
-   std::int32_t zw_open_key( std::uint8_t** key_handle, std::uint32_t desired_access, nt::object_attributes_t* object_attributes ) { return ( ( zw_open_key_t )( find_export( "ZwOpenKey" ) ) )( key_handle, desired_access, object_attributes ); }
-   std::int32_t zw_create_key( std::uint8_t** key_handle, std::uint32_t desired_access, nt::object_attributes_t* object_attributes, std::uint32_t title_index, nt::unicode_string_t* obj_class, std::uint32_t create_options, std::uint32_t* disposition ) { return ( ( zw_create_key_t )( find_export( "ZwCreateKey" ) ) )( key_handle, desired_access, object_attributes, title_index, obj_class, create_options, disposition ); }
-   std::int32_t zw_delete_key( std::uint8_t* key_handle ) { return ( ( zw_delete_key_t )( find_export( "ZwOpenKey" ) ) )( key_handle ); }
+      using call_t = std::uint8_t*( __stdcall* )( const char* );
+      return ptr< call_t >( fn_call )( library_name.data( ) );
+   }
+}
+
+namespace advapi
+{
+   // NIGGER
 }
 
 std::int32_t main( )
 {
-   std::cin.get( );
+   // ;3
 }  
