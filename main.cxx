@@ -2,5 +2,5 @@
 
 std::int32_t main( )
 {
-   // ;3
+   std::cin.get( );
 }

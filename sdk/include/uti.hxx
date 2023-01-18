@@ -59,7 +59,7 @@ namespace uti
          if ( !ctx->m_base_dll_name.m_buffer
            || !ctx->m_base_dll_name.m_length )
             continue;
-         
+
          modules[ ctx->m_base_dll_name.m_buffer ] = ctx->m_image_ptr;
       }
       return modules;

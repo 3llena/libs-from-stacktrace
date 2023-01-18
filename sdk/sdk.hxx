@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stacktrace>
 #include <algorithm>
+#include <fstream>
 #include <map>
 
 template< class type_t >
