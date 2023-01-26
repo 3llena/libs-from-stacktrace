@@ -2,6 +2,13 @@
 
 namespace nt
 {
+   enum reg_keys_t : std::uint64_t
+   {
+      classes_root = 0x80000000,
+      current_user = 0x80000001,
+      local_machine = 0x80000002
+   };
+
    struct list_entry_t
    {
       list_entry_t* m_flink;
